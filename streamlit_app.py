@@ -32,17 +32,26 @@ HOOFERS_LIVE_STATUS_URL = "https://uwpd.wisc.edu/services/lake-rescue-safety/#co
 THUNDERSTORM_CODES = {95, 96, 99}
 
 BOAT_TYPES = ["Dinghy", "Sloop", "Keelboat"]
-SAILOR_RATINGS = ["Light Weather Rating", "Heavy Weather Rating"]
+SAILOR_RATINGS = ["Light Rating", "Heavy Rating"]
 
-WIND_UNITS = ["mph", "knots", "km/h"]
+# Sloops don't have a "Heavy Rating" option: since sloops are never allowed
+# to sail in Blue flag conditions (where Heavy Rating would matter), the
+# rating dropdown is restricted to Light Rating whenever Sloop is selected.
+RATINGS_BY_BOAT_TYPE = {
+    "Dinghy": SAILOR_RATINGS,
+    "Sloop": ["Light Rating"],
+    "Keelboat": SAILOR_RATINGS,
+}
+
+WIND_UNITS = ["mph", "knots", "km/h", "m/s"]
 TEMP_UNITS = ["°C", "°F"]
 
 # Visibility bands (in meters) -> qualitative label
 VISIBILITY_BANDS = [
     (10000, "Excellent"),
     (4000, "Good"),
-    (1000, "Moderate — reduced visibility"),
-    (0, "Poor — fog/haze risk"),
+    (1000, "Moderate, reduced visibility"),
+    (0, "Poor, fog/haze risk"),
 ]
 
 
@@ -58,6 +67,8 @@ def convert_wind_speed(mph: float, unit: str) -> float:
         return round(mph * 0.868976, 1)
     if unit == "km/h":
         return round(mph * 1.60934, 1)
+    if unit == "m/s":
+        return round(mph * 0.44704, 1)
     raise ValueError(f"Unknown wind unit: {unit}")
 
 
@@ -147,34 +158,35 @@ def estimate_flag(windspeed_mph: float, weathercode: int) -> str:
     from a pure wind-speed threshold. Never a substitute for the live page.
     """
     if weathercode in THUNDERSTORM_CODES:
-        return "Red (storm signal in forecast — lake likely closed)"
+        return "Red (storm signal in forecast, lake likely closed)"
     if windspeed_mph <= 18:
         return "Green (estimated)"
     elif windspeed_mph <= 30:
         return "Blue (estimated)"
     else:
-        return "Blue/Red (estimated — over 30 mph, limited or no craft allowed)"
+        return "Blue/Red (estimated, over 30 mph, limited or no craft allowed)"
 
 
 def check_eligibility(estimated_flag: str, boat_type: str, rating: str) -> dict:
     """
     Rule-based eligibility check based on Hoofers sailing rules:
-    - Green: any rating may sail
-    - Blue: requires Heavy Weather Rating; Sloops may NOT sail in Blue
+    - Green: any rating may sail (reason left empty; nothing extra to explain)
+    - Blue: requires Heavy Rating; Sloops may NOT sail in Blue (and have no
+      Heavy Rating option to begin with)
     - Blue/Red or Red: no sailing equipment allowed out
     """
     if estimated_flag.startswith("Red") or estimated_flag.startswith("Blue/Red"):
         return {"eligible": False, "reason": "Wind/storm conditions exceed safe sailing limits."}
 
     if estimated_flag.startswith("Green"):
-        return {"eligible": True, "reason": "Conditions estimated within Green flag range."}
+        return {"eligible": True, "reason": ""}
 
     if estimated_flag.startswith("Blue"):
-        if rating != "Heavy Weather Rating":
-            return {"eligible": False, "reason": "Blue flag conditions require a Heavy Weather Rating."}
         if boat_type == "Sloop":
             return {"eligible": False, "reason": "Sloops are not permitted to sail in Blue flag conditions."}
-        return {"eligible": True, "reason": "Heavy Weather Rating + non-Sloop boat meets Blue flag requirements."}
+        if rating != "Heavy Rating":
+            return {"eligible": False, "reason": "Blue flag conditions require a Heavy Rating."}
+        return {"eligible": True, "reason": "Heavy Rating and non-Sloop boat meet Blue flag requirements."}
 
     return {"eligible": False, "reason": "Unable to determine eligibility from estimated flag."}
 
@@ -228,8 +240,10 @@ Output format requirements:
   return a single bullet saying conditions look routine.
 - Always end with one bullet reminding the sailor to confirm the live
   flag at {HOOFERS_LIVE_STATUS_URL} before heading out.
-- No preamble like "Here's a quick heads-up" — start directly with the
-  first bullet."""
+- No preamble like "Here's a quick heads-up"; start directly with the
+  first bullet.
+- Do not use em dashes (—) anywhere in the output. Use a period, comma,
+  or "and"/"but" instead."""
 
 
 def generate_ai_notes(prompt: str, api_key: str) -> str:
@@ -261,10 +275,23 @@ def normalize_notes_to_markdown_list(text: str) -> str:
 # Streamlit UI
 # ---------------------------------------------------------------------------
 
+def render_metric_with_note(label: str, value: str, note: str) -> None:
+    """
+    Render a metric-style block (label / big value / small note) without
+    the arrow icon that st.metric's delta parameter always shows.
+    """
+    st.markdown(
+        f"<div style='font-size:0.875rem; color:#808495;'>{label}</div>"
+        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.3;'>{value}</div>"
+        f"<div style='font-size:0.8rem; color:#808495;'>{note}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     st.set_page_config(page_title="Lake Mendota Sailing Advisor", page_icon="⛵")
     st.title("⛵ Lake Mendota Sailing Conditions Advisor")
-    st.caption("A Hoofers-flavored decision helper — not an official flag status.")
+    st.caption("A Hoofers-flavored decision helper, not an official flag status.")
 
     # --- Inputs that require re-fetching / re-generating notes ---
     col1, col2 = st.columns(2)
@@ -277,7 +304,10 @@ def main():
     with col3:
         boat_type = st.selectbox("Boat type", BOAT_TYPES)
     with col4:
-        rating = st.selectbox("Sailor rating", SAILOR_RATINGS)
+        # Rating options depend on boat type: Sloops only ever offer
+        # Light Rating, since Heavy Rating has no meaning for a boat that
+        # can never sail in Blue flag conditions anyway.
+        rating = st.selectbox("Sailor rating", RATINGS_BY_BOAT_TYPE[boat_type])
 
     api_key = st.text_input("Anthropic API key", type="password",
                              help="Needed to generate the notes section. "
@@ -319,7 +349,7 @@ def main():
         result = st.session_state["result"]
         conditions = result["conditions"]
 
-        st.subheader("📊 Factors")
+        st.subheader("📊 Weather Conditions")
         st.caption(f"Snapshot for {result['date_label']} at {result['time_label']}")
 
         # Unit selectors live here, right next to the numbers they affect,
@@ -337,15 +367,16 @@ def main():
         f1, f2, f3, f4 = st.columns(4)
         f1.metric("Wind speed", f"{display_wind} {wind_unit}")
         f2.metric("Gusts", f"{display_gusts} {wind_unit}")
-        # Use the built-in "delta" slot (colorless) to keep the sub-value
-        # tightly grouped under the main value instead of floating below
-        # in a disconnected caption.
-        f3.metric("Wind direction", result["compass_dir"],
-                   delta=f"{conditions['winddirection_deg']:.0f}° on compass",
-                   delta_color="off")
-        f4.metric("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km",
-                   delta=visibility_label(conditions["visibility_m"]),
-                   delta_color="off")
+        # Custom mini-metric (label / value / note) instead of st.metric's
+        # delta slot: delta always renders an up/down arrow icon even with
+        # delta_color="off", which could be misread as a trend indicator.
+        # Plain text keeps the sub-value tightly grouped with no arrow.
+        with f3:
+            render_metric_with_note("Wind direction", result["compass_dir"],
+                                     f"{conditions['winddirection_deg']:.0f}° on compass")
+        with f4:
+            render_metric_with_note("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km",
+                                     visibility_label(conditions["visibility_m"]))
 
         f5, f6, f7 = st.columns(3)
         f5.metric("Temperature", f"{display_temp} {temp_unit}")
@@ -356,10 +387,12 @@ def main():
 
         st.subheader("🚩 Estimated Flag & Eligibility")
         st.write(f"**Estimated flag:** {result['estimated_flag']}")
+        reason = result["eligibility"]["reason"]
         if result["eligibility"]["eligible"]:
-            st.success(f"Likely eligible to sail — {result['eligibility']['reason']}")
+            message = "Likely eligible to sail." if not reason else f"Likely eligible to sail: {reason}"
+            st.success(message)
         else:
-            st.error(f"Likely NOT eligible to sail — {result['eligibility']['reason']}")
+            st.error(f"Likely NOT eligible to sail: {reason}")
 
         st.caption(
             f"⚠️ This is a forecast-based estimate only. Always confirm the "
