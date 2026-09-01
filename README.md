@@ -56,6 +56,27 @@ pre-computes the gust-to-wind ratio in Python and tells Claude the
 conclusion directly ("this is/isn't worth flagging"), rather than asking
 it to do the math and judgment call itself.
 
+## A behavioral-science lens on the design
+
+A few interface choices in this project were shaped by my background in
+behavioral and decision sciences, not just software engineering
+conventions:
+
+- The flag colors (Green/Blue/Red) lean on color semantics people already
+  carry, rather than asking users to interpret a raw number.
+- Every eligibility verdict comes with a one-line reason, not just a
+  yes/no. Research on algorithmic advice consistently shows people trust
+  and act on recommendations more when a reason is attached.
+- Visibility is shown as a qualitative label (Excellent / Good /
+  Moderate / Poor) alongside the raw distance, not just the number
+  itself. This converts raw information into an evaluation: the user
+  doesn't have to know what counts as "good" visibility for sailing, the
+  label already makes that judgment for them.
+- The Notes section is designed to surface only what's actually worth
+  attention today, rather than restating every input. This is a
+  deliberate choice against information overload, which tends to reduce,
+  not improve, decision quality.
+
 ## How I used AI tools while building this
 
 I built this end-to-end using Claude (chat, for planning and code
