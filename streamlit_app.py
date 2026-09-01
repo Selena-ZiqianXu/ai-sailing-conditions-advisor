@@ -12,6 +12,7 @@ Actual flags are set by Hoofers staff and may differ. Always check the
 live status before sailing: https://uwpd.wisc.edu/services/lake-rescue-safety/#conditions
 """
 
+import re
 import requests
 import streamlit as st
 from datetime import date, time
@@ -37,7 +38,6 @@ WIND_UNITS = ["mph", "knots", "km/h"]
 TEMP_UNITS = ["°C", "°F"]
 
 # Visibility bands (in meters) -> qualitative label
-# Thresholds loosely follow common aviation/marine visibility categories
 VISIBILITY_BANDS = [
     (10000, "Excellent"),
     (4000, "Good"),
@@ -89,7 +89,6 @@ def fetch_weather(target_date: str) -> dict:
     Wind speed is always fetched in mph (matches Hoofers flag thresholds)
     and temperature in Celsius; display-unit conversion happens separately
     so the underlying flag/eligibility logic never has to worry about units.
-    Returns the raw hourly data dict.
     """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -116,11 +115,7 @@ def fetch_weather(target_date: str) -> dict:
 
 
 def get_conditions_at_hour(hourly: dict, hour: int) -> dict:
-    """
-    Extract the weather snapshot for a specific hour of the day (0-23).
-    Values stay in their base units (mph, Celsius) here; unit conversion
-    for display happens in the UI layer.
-    """
+    """Extract the weather snapshot for a specific hour of the day (0-23)."""
     return {
         "temperature_c": hourly["temperature_2m"][hour],
         "precipitation_probability": hourly["precipitation_probability"][hour],
@@ -148,10 +143,8 @@ def wind_direction_to_compass(degrees: float) -> str:
 def estimate_flag(windspeed_mph: float, weathercode: int) -> str:
     """
     Estimate a Hoofers-style flag from forecast wind speed.
-    NOTE: This is an approximation. Real flags are set by staff and can
-    diverge from a pure wind-speed threshold (e.g. incoming storms,
-    lifeguard judgment). This estimate should never replace checking
-    the live status page.
+    NOTE: approximation only — real flags are set by staff and can diverge
+    from a pure wind-speed threshold. Never a substitute for the live page.
     """
     if weathercode in THUNDERSTORM_CODES:
         return "Red (storm signal in forecast — lake likely closed)"
@@ -169,7 +162,6 @@ def check_eligibility(estimated_flag: str, boat_type: str, rating: str) -> dict:
     - Green: any rating may sail
     - Blue: requires Heavy Weather Rating; Sloops may NOT sail in Blue
     - Blue/Red or Red: no sailing equipment allowed out
-    Returns a dict with an eligibility flag and the reason.
     """
     if estimated_flag.startswith("Red") or estimated_flag.startswith("Blue/Red"):
         return {"eligible": False, "reason": "Wind/storm conditions exceed safe sailing limits."}
@@ -194,13 +186,9 @@ def check_eligibility(estimated_flag: str, boat_type: str, rating: str) -> dict:
 def build_prompt(conditions: dict, compass_dir: str, boat_type: str, rating: str,
                   estimated_flag: str, eligibility: dict) -> str:
     """
-    Build the prompt for Claude, embedding Hoofers-specific local knowledge
-    (e.g. south wind behavior near the clubhouse) so the model can reason
-    about nuances that pure thresholds can't capture.
-
-    The prompt explicitly asks for SHORT, SELECTIVE bullet points —
-    only flagging things that actually matter for this specific forecast —
-    rather than restating every input value.
+    Build the prompt for Claude. Explicitly requests real markdown list
+    syntax (one '- ' bullet per line) so the output renders as an actual
+    list instead of a single run-on paragraph.
     """
     return f"""You are a sailing conditions assistant for Hoofers Sailing Club on Lake Mendota (Madison, WI).
 
@@ -229,18 +217,19 @@ Local knowledge (only mention if it actually applies to today's conditions):
   knockdown risk, worth flagging.
 - High UV (7+) combined with sailing = worth a sun/hydration reminder.
 
-Output format: 2-4 short bullet points, most important first. Each bullet
-should be one sentence. ONLY include a bullet if it flags something the
-sailor should actually pay attention to today — do NOT restate conditions
-that are simply normal/fine, and do NOT explain background context (e.g.
-don't describe what south wind normally does if today's wind isn't from
-the south). If there is nothing noteworthy beyond the flag/eligibility
-already shown, it's fine to return just one bullet saying conditions look
-routine. Always end with one bullet reminding the sailor to confirm the
-live flag at {HOOFERS_LIVE_STATUS_URL} before heading out.
-
-Do not use a preamble like "Here's a quick heads-up" — start directly
-with the bullets."""
+Output format requirements:
+- 2-4 bullet points, most important first, one short sentence each.
+- Format EXACTLY as a markdown list: each bullet starts with "- " and is
+  on its own line (real line breaks, not a bullet character inline).
+- Only include a bullet if it flags something worth the sailor's
+  attention today. Do not restate conditions that are simply normal, and
+  do not explain background context that doesn't apply today.
+- If nothing is noteworthy beyond the flag/eligibility already shown,
+  return a single bullet saying conditions look routine.
+- Always end with one bullet reminding the sailor to confirm the live
+  flag at {HOOFERS_LIVE_STATUS_URL} before heading out.
+- No preamble like "Here's a quick heads-up" — start directly with the
+  first bullet."""
 
 
 def generate_ai_notes(prompt: str, api_key: str) -> str:
@@ -254,6 +243,20 @@ def generate_ai_notes(prompt: str, api_key: str) -> str:
     return message.content[0].text
 
 
+def normalize_notes_to_markdown_list(text: str) -> str:
+    """
+    Safety net in case the model returns bullets using a '•' character
+    inline without real line breaks (which Markdown would otherwise
+    collapse into one paragraph). Re-splits on '•' and rebuilds a proper
+    '- ' markdown list with real newlines so Streamlit renders it as
+    separate list items.
+    """
+    if "•" in text:
+        items = [item.strip() for item in text.split("•") if item.strip()]
+        return "\n".join(f"- {item}" for item in items)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Streamlit UI
 # ---------------------------------------------------------------------------
@@ -263,7 +266,7 @@ def main():
     st.title("⛵ Lake Mendota Sailing Conditions Advisor")
     st.caption("A Hoofers-flavored decision helper — not an official flag status.")
 
-    # --- Inputs ---
+    # --- Inputs that require re-fetching / re-generating notes ---
     col1, col2 = st.columns(2)
     with col1:
         selected_date = st.date_input("Date", value=date.today())
@@ -276,13 +279,6 @@ def main():
     with col4:
         rating = st.selectbox("Sailor rating", SAILOR_RATINGS)
 
-    # Display-unit preferences (do not affect underlying flag/eligibility logic)
-    col5, col6 = st.columns(2)
-    with col5:
-        wind_unit = st.selectbox("Wind speed unit", WIND_UNITS)
-    with col6:
-        temp_unit = st.selectbox("Temperature unit", TEMP_UNITS)
-
     api_key = st.text_input("Anthropic API key", type="password",
                              help="Needed to generate the notes section. "
                                   "Get one at console.anthropic.com")
@@ -292,10 +288,47 @@ def main():
             hourly = fetch_weather(selected_date.isoformat())
             conditions = get_conditions_at_hour(hourly, selected_time.hour)
             compass_dir = wind_direction_to_compass(conditions["winddirection_deg"])
+            estimated_flag = estimate_flag(conditions["windspeed_mph"], conditions["weathercode"])
+            eligibility = check_eligibility(estimated_flag, boat_type, rating)
 
-        # --- Factors (raw data, no AI) ---
+            notes = None
+            if api_key:
+                with st.spinner("Generating notes..."):
+                    prompt = build_prompt(conditions, compass_dir, boat_type, rating,
+                                           estimated_flag, eligibility)
+                    try:
+                        notes = normalize_notes_to_markdown_list(generate_ai_notes(prompt, api_key))
+                    except Exception as e:
+                        notes = f"⚠️ Could not generate notes: {e}"
+
+        # Cache everything needed to re-render the output. This lets the
+        # unit selectors below trigger a rerun WITHOUT re-fetching weather
+        # or re-calling the AI — only the display conversion changes.
+        st.session_state["result"] = {
+            "date_label": selected_date.isoformat(),
+            "time_label": selected_time.strftime("%H:%M"),
+            "conditions": conditions,
+            "compass_dir": compass_dir,
+            "estimated_flag": estimated_flag,
+            "eligibility": eligibility,
+            "notes": notes,
+        }
+
+    # --- Render output (persists across unit-selector reruns) ---
+    if "result" in st.session_state:
+        result = st.session_state["result"]
+        conditions = result["conditions"]
+
         st.subheader("📊 Factors")
-        st.caption(f"Snapshot for {selected_date.isoformat()} at {selected_time.strftime('%H:%M')}")
+        st.caption(f"Snapshot for {result['date_label']} at {result['time_label']}")
+
+        # Unit selectors live here, right next to the numbers they affect,
+        # so the user can flip units without re-running the whole check.
+        u1, u2 = st.columns(2)
+        with u1:
+            wind_unit = st.selectbox("Wind speed unit", WIND_UNITS, key="wind_unit")
+        with u2:
+            temp_unit = st.selectbox("Temperature unit", TEMP_UNITS, key="temp_unit")
 
         display_wind = convert_wind_speed(conditions["windspeed_mph"], wind_unit)
         display_gusts = convert_wind_speed(conditions["windgusts_mph"], wind_unit)
@@ -304,10 +337,15 @@ def main():
         f1, f2, f3, f4 = st.columns(4)
         f1.metric("Wind speed", f"{display_wind} {wind_unit}")
         f2.metric("Gusts", f"{display_gusts} {wind_unit}")
-        f3.metric("Wind direction", compass_dir)
-        f3.caption(f"{conditions['winddirection_deg']:.0f}° on the compass")
-        f4.metric("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km")
-        f4.caption(visibility_label(conditions["visibility_m"]))
+        # Use the built-in "delta" slot (colorless) to keep the sub-value
+        # tightly grouped under the main value instead of floating below
+        # in a disconnected caption.
+        f3.metric("Wind direction", result["compass_dir"],
+                   delta=f"{conditions['winddirection_deg']:.0f}° on compass",
+                   delta_color="off")
+        f4.metric("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km",
+                   delta=visibility_label(conditions["visibility_m"]),
+                   delta_color="off")
 
         f5, f6, f7 = st.columns(3)
         f5.metric("Temperature", f"{display_temp} {temp_unit}")
@@ -316,35 +354,23 @@ def main():
                   help="Precipitation probability: the forecast likelihood "
                        "of measurable rain during this hour.")
 
-        # --- Estimated flag + eligibility (rule-based) ---
         st.subheader("🚩 Estimated Flag & Eligibility")
-        estimated_flag = estimate_flag(conditions["windspeed_mph"], conditions["weathercode"])
-        eligibility = check_eligibility(estimated_flag, boat_type, rating)
-
-        st.write(f"**Estimated flag:** {estimated_flag}")
-        if eligibility["eligible"]:
-            st.success(f"Likely eligible to sail — {eligibility['reason']}")
+        st.write(f"**Estimated flag:** {result['estimated_flag']}")
+        if result["eligibility"]["eligible"]:
+            st.success(f"Likely eligible to sail — {result['eligibility']['reason']}")
         else:
-            st.error(f"Likely NOT eligible to sail — {eligibility['reason']}")
+            st.error(f"Likely NOT eligible to sail — {result['eligibility']['reason']}")
 
         st.caption(
             f"⚠️ This is a forecast-based estimate only. Always confirm the "
             f"live flag before sailing: {HOOFERS_LIVE_STATUS_URL}"
         )
 
-        # --- AI-generated notes ---
         st.subheader("📝 Notes")
-        if not api_key:
-            st.info("Enter an Anthropic API key above to generate detailed notes.")
+        if result["notes"] is None:
+            st.info("Enter an Anthropic API key above and re-check conditions to generate notes.")
         else:
-            with st.spinner("Generating notes..."):
-                prompt = build_prompt(conditions, compass_dir, boat_type, rating,
-                                       estimated_flag, eligibility)
-                try:
-                    notes = generate_ai_notes(prompt, api_key)
-                    st.markdown(notes)
-                except Exception as e:
-                    st.error(f"Could not generate notes: {e}")
+            st.markdown(result["notes"])
 
 
 if __name__ == "__main__":
