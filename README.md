@@ -4,9 +4,16 @@ A small AI-assisted tool that helps Hoofers Sailing Club members decide
 whether today's conditions on Lake Mendota (Madison, WI) are suitable for
 sailing, based on their boat type and sailing rating.
 
-**[Live Demo →](https://lake-mendota-sailing-conditions-tqbu7qrwjtwtlcbmoe2otk.streamlit.app/)**
-
-**Why this project:** I'm an active member of the Hoofers Sailing Club. In the summer, before heading out I mainly check wind speed, wind direction, and whether thunderstorms are in the forecast (Madison summers are pleasant enough that I don't usually think about temperature unless it's unusually hot). From there I estimate, based on experience, whether conditions seem workable. This project tries to formalize that judgment call, combining the same weather factors with club-specific rules and local knowledge (e.g. how wind behaves near the Hoofers harbor) that a generic weather app wouldn't know.
+**Live demo:** _[add your Streamlit Cloud link here]_
+**Why this project:** I'm an active member of the Hoofers Sailing Club.
+In the summer, before heading out I mainly check wind speed, wind
+direction, and whether thunderstorms are in the forecast (Madison summers
+are pleasant enough that I don't usually think about temperature unless
+it's unusually hot). From there I estimate, based on experience, whether
+conditions seem workable. This project tries to formalize that judgment
+call, combining the same weather factors with club-specific rules and
+local knowledge (e.g. how wind behaves near the Hoofers harbor) that a
+generic weather app wouldn't know.
 
 ---
 
@@ -92,7 +99,7 @@ The flag shown in this app is a **forecast-based estimate only**. Actual
 Hoofers flags are set by staff and can diverge from a pure wind-speed
 threshold (approaching storms, on-the-water judgment calls, etc.). Always
 confirm the live flag before sailing:
-https://uwpd.wisc.edu/services/lake-rescue-safety
+https://uwpd.wisc.edu/services/lake-rescue-safety/#conditions
 
 ## Future improvements
 
