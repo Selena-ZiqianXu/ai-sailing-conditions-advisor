@@ -4,7 +4,7 @@ A Streamlit app that:
 1. Fetches weather data from Open-Meteo (no API key needed)
 2. Computes an ESTIMATED flag level from wind speed (Hoofers-style thresholds)
 3. Checks eligibility based on boat type + sailor rating
-4. Uses Claude API to generate human-readable notes/warnings based on
+4. Uses Claude API to generate concise, human-readable notes based on
    local sailing knowledge (e.g. south wind behavior at Hoofers)
 
 IMPORTANT: The estimated flag is a forecast-based approximation only.
@@ -14,7 +14,7 @@ live status before sailing: https://uwpd.wisc.edu/services/lake-rescue-safety/#c
 
 import requests
 import streamlit as st
-from datetime import date
+from datetime import date, time
 import anthropic
 
 # ---------------------------------------------------------------------------
@@ -33,6 +33,50 @@ THUNDERSTORM_CODES = {95, 96, 99}
 BOAT_TYPES = ["Dinghy", "Sloop", "Keelboat"]
 SAILOR_RATINGS = ["Light Weather Rating", "Heavy Weather Rating"]
 
+WIND_UNITS = ["mph", "knots", "km/h"]
+TEMP_UNITS = ["°C", "°F"]
+
+# Visibility bands (in meters) -> qualitative label
+# Thresholds loosely follow common aviation/marine visibility categories
+VISIBILITY_BANDS = [
+    (10000, "Excellent"),
+    (4000, "Good"),
+    (1000, "Moderate — reduced visibility"),
+    (0, "Poor — fog/haze risk"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Unit conversion helpers
+# ---------------------------------------------------------------------------
+
+def convert_wind_speed(mph: float, unit: str) -> float:
+    """Convert a wind speed given in mph to the requested display unit."""
+    if unit == "mph":
+        return round(mph, 1)
+    if unit == "knots":
+        return round(mph * 0.868976, 1)
+    if unit == "km/h":
+        return round(mph * 1.60934, 1)
+    raise ValueError(f"Unknown wind unit: {unit}")
+
+
+def convert_temperature(celsius: float, unit: str) -> float:
+    """Convert a temperature given in Celsius to the requested display unit."""
+    if unit == "°C":
+        return round(celsius, 1)
+    if unit == "°F":
+        return round(celsius * 9 / 5 + 32, 1)
+    raise ValueError(f"Unknown temperature unit: {unit}")
+
+
+def visibility_label(visibility_m: float) -> str:
+    """Return a qualitative label for a visibility distance in meters."""
+    for threshold, label in VISIBILITY_BANDS:
+        if visibility_m >= threshold:
+            return label
+    return "Unknown"
+
 
 # ---------------------------------------------------------------------------
 # Step 1: Fetch weather data (Facts) — no AI involved
@@ -42,6 +86,9 @@ SAILOR_RATINGS = ["Light Weather Rating", "Heavy Weather Rating"]
 def fetch_weather(target_date: str) -> dict:
     """
     Fetch hourly weather data for Lake Mendota from Open-Meteo.
+    Wind speed is always fetched in mph (matches Hoofers flag thresholds)
+    and temperature in Celsius; display-unit conversion happens separately
+    so the underlying flag/eligibility logic never has to worry about units.
     Returns the raw hourly data dict.
     """
     url = "https://api.open-meteo.com/v1/forecast"
@@ -60,7 +107,7 @@ def fetch_weather(target_date: str) -> dict:
         ],
         "start_date": target_date,
         "end_date": target_date,
-        "windspeed_unit": "mph",  # matches Hoofers flag thresholds (mph)
+        "windspeed_unit": "mph",
         "timezone": "America/Chicago",
     }
     response = requests.get(url, params=params, timeout=10)
@@ -68,22 +115,21 @@ def fetch_weather(target_date: str) -> dict:
     return response.json()["hourly"]
 
 
-def summarize_midday_conditions(hourly: dict) -> dict:
+def get_conditions_at_hour(hourly: dict, hour: int) -> dict:
     """
-    Pick a representative midday hour (index 12, i.e. ~12:00 local time)
-    as a simple summary snapshot for the day.
-    A more advanced version could let the user pick a specific hour.
+    Extract the weather snapshot for a specific hour of the day (0-23).
+    Values stay in their base units (mph, Celsius) here; unit conversion
+    for display happens in the UI layer.
     """
-    idx = 12
     return {
-        "temperature_c": hourly["temperature_2m"][idx],
-        "precipitation_probability": hourly["precipitation_probability"][idx],
-        "weathercode": hourly["weathercode"][idx],
-        "windspeed_mph": hourly["windspeed_10m"][idx],
-        "windgusts_mph": hourly["windgusts_10m"][idx],
-        "winddirection_deg": hourly["winddirection_10m"][idx],
-        "visibility_m": hourly["visibility"][idx],
-        "uv_index": hourly["uv_index"][idx],
+        "temperature_c": hourly["temperature_2m"][hour],
+        "precipitation_probability": hourly["precipitation_probability"][hour],
+        "weathercode": hourly["weathercode"][hour],
+        "windspeed_mph": hourly["windspeed_10m"][hour],
+        "windgusts_mph": hourly["windgusts_10m"][hour],
+        "winddirection_deg": hourly["winddirection_10m"][hour],
+        "visibility_m": hourly["visibility"][hour],
+        "uv_index": hourly["uv_index"][hour],
     }
 
 
@@ -151,10 +197,14 @@ def build_prompt(conditions: dict, compass_dir: str, boat_type: str, rating: str
     Build the prompt for Claude, embedding Hoofers-specific local knowledge
     (e.g. south wind behavior near the clubhouse) so the model can reason
     about nuances that pure thresholds can't capture.
+
+    The prompt explicitly asks for SHORT, SELECTIVE bullet points —
+    only flagging things that actually matter for this specific forecast —
+    rather than restating every input value.
     """
     return f"""You are a sailing conditions assistant for Hoofers Sailing Club on Lake Mendota (Madison, WI).
 
-Today's forecast conditions (midday snapshot):
+Forecast snapshot for the selected time:
 - Wind speed: {conditions['windspeed_mph']} mph
 - Wind gusts: {conditions['windgusts_mph']} mph
 - Wind direction: {compass_dir} ({conditions['winddirection_deg']}°)
@@ -167,30 +217,30 @@ Sailor input:
 - Boat type: {boat_type}
 - Sailor rating: {rating}
 
-Rule-based assessment (already computed, do not recompute):
+Rule-based assessment (already computed, do not recompute or restate in detail):
 - Estimated flag: {estimated_flag}
 - Eligibility: {"Eligible" if eligibility['eligible'] else "Not eligible"} — {eligibility['reason']}
 
-Local knowledge to apply:
-- Hoofers Sailing Club sits on the south shore of Lake Mendota, surrounded by
-  buildings near the harbor. South winds behave unusually here:
-  - Light south wind: the shoreline can be nearly wind-still, making it hard
-    to sail back into the harbor.
-  - Strong south wind: turbulent, gusty air near the shore due to buildings.
-- Gusts significantly higher than sustained wind speed (roughly 50%+ higher)
-  indicate an increased risk of sudden knockdowns.
-- Keelboats are generally more stable than dinghies in gusty conditions.
+Local knowledge (only mention if it actually applies to today's conditions):
+- Hoofers sits on the south shore of Lake Mendota, near buildings. South
+  wind (S/SSW/SSE) can mean near-dead air right at the shore (hard to
+  sail back in) when light, or turbulent gusty air near shore when strong.
+- Gusts 50%+ higher than sustained wind speed = meaningfully higher
+  knockdown risk, worth flagging.
+- High UV (7+) combined with sailing = worth a sun/hydration reminder.
 
-Write a short, practical set of notes (3-5 sentences) for the sailor covering:
-1. Any south-wind-specific caution if wind direction is roughly S/SSW/SSE.
-2. A note on gust risk if gusts are notably higher than sustained wind.
-3. A reminder that the flag above is a forecast-based ESTIMATE, and the
-   sailor should confirm the live flag at the clubhouse or via
-   {HOOFERS_LIVE_STATUS_URL} before heading out.
-4. Any sun/heat exposure note if UV index is high (7+).
+Output format: 2-4 short bullet points, most important first. Each bullet
+should be one sentence. ONLY include a bullet if it flags something the
+sailor should actually pay attention to today — do NOT restate conditions
+that are simply normal/fine, and do NOT explain background context (e.g.
+don't describe what south wind normally does if today's wind isn't from
+the south). If there is nothing noteworthy beyond the flag/eligibility
+already shown, it's fine to return just one bullet saying conditions look
+routine. Always end with one bullet reminding the sailor to confirm the
+live flag at {HOOFERS_LIVE_STATUS_URL} before heading out.
 
-Keep the tone practical and concise, like a knowledgeable club member giving
-a quick heads-up — not a formal weather report."""
+Do not use a preamble like "Here's a quick heads-up" — start directly
+with the bullets."""
 
 
 def generate_ai_notes(prompt: str, api_key: str) -> str:
@@ -198,7 +248,7 @@ def generate_ai_notes(prompt: str, api_key: str) -> str:
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=400,
+        max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )
     return message.content[0].text
@@ -214,13 +264,24 @@ def main():
     st.caption("A Hoofers-flavored decision helper — not an official flag status.")
 
     # --- Inputs ---
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         selected_date = st.date_input("Date", value=date.today())
     with col2:
-        boat_type = st.selectbox("Boat type", BOAT_TYPES)
+        selected_time = st.time_input("Time", value=time(12, 0))
+
+    col3, col4 = st.columns(2)
     with col3:
+        boat_type = st.selectbox("Boat type", BOAT_TYPES)
+    with col4:
         rating = st.selectbox("Sailor rating", SAILOR_RATINGS)
+
+    # Display-unit preferences (do not affect underlying flag/eligibility logic)
+    col5, col6 = st.columns(2)
+    with col5:
+        wind_unit = st.selectbox("Wind speed unit", WIND_UNITS)
+    with col6:
+        temp_unit = st.selectbox("Temperature unit", TEMP_UNITS)
 
     api_key = st.text_input("Anthropic API key", type="password",
                              help="Needed to generate the notes section. "
@@ -229,21 +290,31 @@ def main():
     if st.button("Check conditions", type="primary"):
         with st.spinner("Fetching weather data..."):
             hourly = fetch_weather(selected_date.isoformat())
-            conditions = summarize_midday_conditions(hourly)
+            conditions = get_conditions_at_hour(hourly, selected_time.hour)
             compass_dir = wind_direction_to_compass(conditions["winddirection_deg"])
 
         # --- Factors (raw data, no AI) ---
         st.subheader("📊 Factors")
+        st.caption(f"Snapshot for {selected_date.isoformat()} at {selected_time.strftime('%H:%M')}")
+
+        display_wind = convert_wind_speed(conditions["windspeed_mph"], wind_unit)
+        display_gusts = convert_wind_speed(conditions["windgusts_mph"], wind_unit)
+        display_temp = convert_temperature(conditions["temperature_c"], temp_unit)
+
         f1, f2, f3, f4 = st.columns(4)
-        f1.metric("Wind speed", f"{conditions['windspeed_mph']} mph")
-        f2.metric("Gusts", f"{conditions['windgusts_mph']} mph")
-        f3.metric("Wind direction", f"{compass_dir} ({conditions['winddirection_deg']}°)")
-        f4.metric("Visibility", f"{conditions['visibility_m']} m")
+        f1.metric("Wind speed", f"{display_wind} {wind_unit}")
+        f2.metric("Gusts", f"{display_gusts} {wind_unit}")
+        f3.metric("Wind direction", compass_dir)
+        f3.caption(f"{conditions['winddirection_deg']:.0f}° on the compass")
+        f4.metric("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km")
+        f4.caption(visibility_label(conditions["visibility_m"]))
 
         f5, f6, f7 = st.columns(3)
-        f5.metric("Temperature", f"{conditions['temperature_c']}°C")
+        f5.metric("Temperature", f"{display_temp} {temp_unit}")
         f6.metric("UV index", conditions["uv_index"])
-        f7.metric("Precip. chance", f"{conditions['precipitation_probability']}%")
+        f7.metric("Rain chance", f"{conditions['precipitation_probability']}%",
+                  help="Precipitation probability: the forecast likelihood "
+                       "of measurable rain during this hour.")
 
         # --- Estimated flag + eligibility (rule-based) ---
         st.subheader("🚩 Estimated Flag & Eligibility")
@@ -271,7 +342,7 @@ def main():
                                        estimated_flag, eligibility)
                 try:
                     notes = generate_ai_notes(prompt, api_key)
-                    st.write(notes)
+                    st.markdown(notes)
                 except Exception as e:
                     st.error(f"Could not generate notes: {e}")
 
