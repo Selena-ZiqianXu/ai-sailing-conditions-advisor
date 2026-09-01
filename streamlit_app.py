@@ -275,21 +275,26 @@ def normalize_notes_to_markdown_list(text: str) -> str:
 # Streamlit UI
 # ---------------------------------------------------------------------------
 
-def render_metric_with_note(label: str, value: str, note: str) -> None:
+def hide_metric_delta_arrows() -> None:
     """
-    Render a metric-style block (label / big value / small note) without
-    the arrow icon that st.metric's delta parameter always shows.
+    Streamlit's st.metric always renders an up/down arrow icon next to the
+    delta text, even with delta_color="off" (which only removes the color,
+    not the icon). Since our "delta" is being reused to show a plain note
+    (compass degrees, visibility label) rather than an actual trend, the
+    arrow would misleadingly imply "increasing/decreasing". This injects a
+    small CSS rule that hides just the arrow SVG, leaving the rest of
+    st.metric's native styling (label color, pill background, spacing)
+    untouched.
     """
     st.markdown(
-        f"<div style='font-size:0.875rem; color:#808495;'>{label}</div>"
-        f"<div style='font-size:1.75rem; font-weight:600; line-height:1.3;'>{value}</div>"
-        f"<div style='font-size:0.8rem; color:#808495;'>{note}</div>",
+        "<style>[data-testid='stMetricDelta'] svg { display: none; }</style>",
         unsafe_allow_html=True,
     )
 
 
 def main():
     st.set_page_config(page_title="Lake Mendota Sailing Advisor", page_icon="⛵")
+    hide_metric_delta_arrows()
     st.title("⛵ Lake Mendota Sailing Conditions Advisor")
     st.caption("A Hoofers-flavored decision helper, not an official flag status.")
 
@@ -367,16 +372,12 @@ def main():
         f1, f2, f3, f4 = st.columns(4)
         f1.metric("Wind speed", f"{display_wind} {wind_unit}")
         f2.metric("Gusts", f"{display_gusts} {wind_unit}")
-        # Custom mini-metric (label / value / note) instead of st.metric's
-        # delta slot: delta always renders an up/down arrow icon even with
-        # delta_color="off", which could be misread as a trend indicator.
-        # Plain text keeps the sub-value tightly grouped with no arrow.
-        with f3:
-            render_metric_with_note("Wind direction", result["compass_dir"],
-                                     f"{conditions['winddirection_deg']:.0f}° on compass")
-        with f4:
-            render_metric_with_note("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km",
-                                     visibility_label(conditions["visibility_m"]))
+        f3.metric("Wind direction", result["compass_dir"],
+                   delta=f"{conditions['winddirection_deg']:.0f}° on compass",
+                   delta_color="off")
+        f4.metric("Visibility", f"{conditions['visibility_m'] / 1000:.1f} km",
+                   delta=visibility_label(conditions["visibility_m"]),
+                   delta_color="off")
 
         f5, f6, f7 = st.columns(3)
         f5.metric("Temperature", f"{display_temp} {temp_unit}")
