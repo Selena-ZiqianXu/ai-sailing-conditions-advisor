@@ -195,6 +195,29 @@ def check_eligibility(estimated_flag: str, boat_type: str, rating: str) -> dict:
 # Step 3: AI-generated notes — combines facts + local knowledge
 # ---------------------------------------------------------------------------
 
+def analyze_gust_risk(windspeed_mph: float, windgusts_mph: float) -> str:
+    """
+    Pre-compute whether gusts are meaningfully higher than sustained wind,
+    instead of letting the AI eyeball the two raw numbers itself. Forecast
+    data can occasionally show gusts equal to or even slightly below
+    sustained wind speed (a known quirk in low-wind conditions), which
+    would make a naive "gusts are Nx higher" claim from the AI nonsensical.
+    Returns a short, pre-decided instruction to embed in the prompt.
+    """
+    # Avoid division by zero on a dead-calm reading.
+    safe_windspeed = max(windspeed_mph, 0.1)
+    ratio = windgusts_mph / safe_windspeed
+
+    if ratio >= 1.5:
+        return (f"Gusts are meaningfully higher than sustained wind "
+                 f"({ratio:.1f}x). Flag this as a knockdown risk worth a bullet.")
+    else:
+        return ("Gusts are NOT meaningfully higher than sustained wind today "
+                "(ratio under 1.5x, or gusts are close to/below sustained speed, "
+                "which can happen in light wind). Do not include a gust risk "
+                "bullet; do not state a gust-to-wind ratio or percentage.")
+
+
 def build_prompt(conditions: dict, compass_dir: str, boat_type: str, rating: str,
                   estimated_flag: str, eligibility: dict) -> str:
     """
@@ -202,6 +225,8 @@ def build_prompt(conditions: dict, compass_dir: str, boat_type: str, rating: str
     syntax (one '- ' bullet per line) so the output renders as an actual
     list instead of a single run-on paragraph.
     """
+    gust_instruction = analyze_gust_risk(conditions["windspeed_mph"], conditions["windgusts_mph"])
+
     return f"""You are a sailing conditions assistant for Hoofers Sailing Club on Lake Mendota (Madison, WI).
 
 Forecast snapshot for the selected time:
@@ -225,8 +250,8 @@ Local knowledge (only mention if it actually applies to today's conditions):
 - Hoofers sits on the south shore of Lake Mendota, near buildings. South
   wind (S/SSW/SSE) can mean near-dead air right at the shore (hard to
   sail back in) when light, or turbulent gusty air near shore when strong.
-- Gusts 50%+ higher than sustained wind speed = meaningfully higher
-  knockdown risk, worth flagging.
+- Gust risk (already analyzed, trust this instead of comparing the raw
+  numbers yourself): {gust_instruction}
 - High UV (7+) combined with sailing = worth a sun/hydration reminder.
 
 Output format requirements:
@@ -314,9 +339,14 @@ def main():
         # can never sail in Blue flag conditions anyway.
         rating = st.selectbox("Sailor rating", RATINGS_BY_BOAT_TYPE[boat_type])
 
-    api_key = st.text_input("Anthropic API key", type="password",
-                             help="Needed to generate the notes section. "
-                                  "Get one at console.anthropic.com")
+    # API key is read from Streamlit Secrets (set in the app's deployment
+    # settings), not typed in by the visitor. This means:
+    # 1. The key is never exposed in the page or sent from the browser.
+    # 2. Anyone opening the deployed link can use the Notes feature right
+    #    away, without needing their own Anthropic account.
+    # Locally, put ANTHROPIC_API_KEY in a .streamlit/secrets.toml file
+    # (which .gitignore already excludes from version control).
+    api_key = st.secrets.get("ANTHROPIC_API_KEY")
 
     if st.button("Check conditions", type="primary"):
         with st.spinner("Fetching weather data..."):
@@ -335,6 +365,9 @@ def main():
                         notes = normalize_notes_to_markdown_list(generate_ai_notes(prompt, api_key))
                     except Exception as e:
                         notes = f"⚠️ Could not generate notes: {e}"
+            else:
+                notes = ("⚠️ No Anthropic API key configured for this deployment. "
+                          "Add ANTHROPIC_API_KEY in the app's Secrets settings.")
 
         # Cache everything needed to re-render the output. This lets the
         # unit selectors below trigger a rerun WITHOUT re-fetching weather
@@ -401,10 +434,7 @@ def main():
         )
 
         st.subheader("📝 Notes")
-        if result["notes"] is None:
-            st.info("Enter an Anthropic API key above and re-check conditions to generate notes.")
-        else:
-            st.markdown(result["notes"])
+        st.markdown(result["notes"])
 
 
 if __name__ == "__main__":
