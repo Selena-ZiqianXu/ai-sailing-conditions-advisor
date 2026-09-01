@@ -4,7 +4,7 @@ A small AI-assisted tool that helps Hoofers Sailing Club members decide
 whether today's conditions on Lake Mendota (Madison, WI) are suitable for
 sailing, based on their boat type and sailing rating.
 
-**Live demo:** _[add your Streamlit Cloud link here]_
+**Live demo:** https://lake-mendota-sailing-conditions-tqbu7qrwjtwtlcbmoe2otk.streamlit.app/
 **Why this project:** I'm an active member of the Hoofers Sailing Club, and
 before heading out I usually check the wind forecast myself and mentally
 translate it into "is this a Green flag day, and does my rating/boat allow
