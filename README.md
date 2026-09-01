@@ -121,7 +121,7 @@ The flag shown in this app is a **forecast-based estimate only**. Actual
 Hoofers flags are set by staff and can diverge from a pure wind-speed
 threshold (approaching storms, on-the-water judgment calls, etc.). Always
 confirm the live flag before sailing:
-https://uwpd.wisc.edu/services/lake-rescue-safety/#conditions
+https://uwpd.wisc.edu/services/lake-rescue-safety
 
 ## Future improvements
 
