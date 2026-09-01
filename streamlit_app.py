@@ -9,7 +9,7 @@ A Streamlit app that:
 
 IMPORTANT: The estimated flag is a forecast-based approximation only.
 Actual flags are set by Hoofers staff and may differ. Always check the
-live status before sailing: https://uwpd.wisc.edu/services/lake-rescue-safety/#conditions
+live status before sailing: https://uwpd.wisc.edu/services/lake-rescue-safety
 """
 
 import re
@@ -26,7 +26,7 @@ import anthropic
 LATITUDE = 43.0800
 LONGITUDE = -89.4100
 
-HOOFERS_LIVE_STATUS_URL = "https://uwpd.wisc.edu/services/lake-rescue-safety/#conditions"
+HOOFERS_LIVE_STATUS_URL = "https://uwpd.wisc.edu/services/lake-rescue-safety"
 
 # WMO weather codes that indicate thunderstorms
 THUNDERSTORM_CODES = {95, 96, 99}
